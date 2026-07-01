@@ -918,14 +918,19 @@
       
       wrapper.style.transition = 'opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1)';
       wrapper.style.opacity = '0';
+      wrapper.style.visibility = 'hidden !important';
+      wrapper.style.pointerEvents = 'none !important';
       setTimeout(() => {
-        welcomeScreen.style.display = 'none';
+        welcomeScreen.style.display = 'none !important';
         welcomeScreen.innerHTML = '';
         if (typeof window.onIntroComplete === 'function') window.onIntroComplete();
       }, 500);
     }
 
     skipBtn.addEventListener('click', terminateIntroCanvasLayer);
+    
+    // ✅ NEW: Expose function globally so app.js can call it when user sends message
+    window.hideMotionAnimation = terminateIntroCanvasLayer;
   }
 
   // --- BOOT ---
