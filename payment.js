@@ -516,7 +516,14 @@
         orderId, planId, isAddon, ts: Date.now()
       }));
 
-      // 2. Open Cashfree checkout popup
+      // 2. Close the premium modal so it doesn't cover the Cashfree overlay
+      //    (Cashfree's _modal iframe is appended to <body>, not inside
+      //    #premiumModal, but #premiumModal's own z-index:99999 !important
+      //    still sits on top of it and hides it visually).
+      const _premiumModalEl = document.getElementById('premiumModal');
+      if (_premiumModalEl) _premiumModalEl.classList.remove('active');
+
+      // 3. Open Cashfree checkout popup
       const cf     = await getCF();
       const result = await cf.checkout({
         paymentSessionId: sessionId,
