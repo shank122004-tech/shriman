@@ -243,6 +243,66 @@
       return { allowed: true, reason: 'Premium user - unlimited battles', unlimited: true };
     }
     
+    // ✅ NEW: Check for paid battle plan
+    const battleTier = localStorage.getItem('sscai_u:' + uid + ':battle_tier');
+    const battleExpiryTime = localStorage.getItem('sscai_u:' + uid + ':battle_tier_expires');
+    
+    // Check if battle plan is expired
+    if (battleTier && battleExpiryTime) {
+      if (Date.now() > parseInt(battleExpiryTime)) {
+        // Expired - clear it
+        localStorage.removeItem('sscai_u:' + uid + ':battle_tier');
+        localStorage.removeItem('sscai_u:' + uid + ':battle_tier_expires');
+        localStorage.removeItem('sscai_u:' + uid + ':battle_monthly_max');
+      } else {
+        // Still valid - check monthly limit
+        const monthlyMax = parseInt(localStorage.getItem('sscai_u:' + uid + ':battle_monthly_max') || '0');
+        const thisMonth = new Date().toISOString().substring(0, 7); // "2024-12"
+        const monthKey = 'sscai_u:' + uid + ':battles_month_' + thisMonth;
+        let count = 0;
+        
+        // Try Firestore first
+        try {
+          const db = window._firebaseDb;
+          const { doc, getDoc } = window._firebaseFns || {};
+          if (db && getDoc) {
+            const snap = await getDoc(doc(db, 'users', uid, 'monthlyUsage', thisMonth));
+            if (snap.exists()) {
+              count = snap.data().battles || 0;
+            }
+          }
+        } catch(e) {}
+        
+        if (count === 0) {
+          count = parseInt(localStorage.getItem(monthKey) || '0');
+        }
+        
+        const remaining = Math.max(0, monthlyMax - count);
+        
+        if (count >= monthlyMax) {
+          const tierNames = { battle: 'Basic', battle_pro: 'Pro', battle_academy: 'Academy' };
+          return {
+            allowed: false,
+            reason: `🔒 Monthly battle limit reached (${monthlyMax}/${monthlyMax}). Your ${tierNames[battleTier]} plan renews next month.`,
+            limit: monthlyMax,
+            used: count,
+            remaining: 0,
+            tier: battleTier
+          };
+        }
+        
+        const tierNames = { battle: 'Basic', battle_pro: 'Pro', battle_academy: 'Academy' };
+        return { 
+          allowed: true, 
+          used: count, 
+          limit: monthlyMax, 
+          remaining: remaining,
+          tier: battleTier,
+          planName: `Battle Creator ${tierNames[battleTier]}`
+        };
+      }
+    }
+    
     // Free users: 3 per day
     const today = new Date().toISOString().split('T')[0];
     let count = 0;
@@ -261,7 +321,7 @@
     
     if (count === 0) {
       // Fallback to localStorage
-      const key = 'sscai_battles_' + today + '_' + uid;
+      const key = 'sscai_u:' + uid + ':battles_' + today;
       count = parseInt(localStorage.getItem(key) || '0');
     }
     
@@ -270,46 +330,81 @@
     if (count >= FREE_BATTLES) {
       return { 
         allowed: false, 
-        reason: '🔒 Daily battle limit reached (3/day free). Upgrade to Premium for unlimited.', 
+        reason: '🔒 Daily battle limit reached (3/day free). Upgrade to Premium or buy a Battle Plan.', 
         limit: 3, 
         used: count,
         remaining: 0
       };
     }
     
-    return { allowed: true, used: count, limit: 3, remaining: remaining };
+    return { allowed: true, used: count, limit: 3, remaining: remaining, isFree: true };
   };
 
   window.trackBattleUsage = async function() {
     const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
     if (!uid) return;
     
+    const access = await window.checkBattleAccess();
+    if (!access.allowed) return; // Don't track if limit exceeded
+    
     const isPrem = await window.getPremiumStatus(uid);
-    if (!isPrem) {
-      const today = new Date().toISOString().split('T')[0];
+    const battleTier = localStorage.getItem('sscai_u:' + uid + ':battle_tier');
+    
+    // If has battle plan, track monthly
+    if (battleTier) {
+      const thisMonth = new Date().toISOString().substring(0, 7); // "2024-12"
       
       try {
         const db = window._firebaseDb;
         const { doc, setDoc } = window._firebaseFns || {};
         if (db && setDoc) {
-          const docRef = doc(db, 'users', uid, 'dailyUsage', today);
-          const access = await window.checkBattleAccess();
+          const docRef = doc(db, 'users', uid, 'monthlyUsage', thisMonth);
           const newCount = (access.used || 0) + 1;
           await setDoc(docRef, { battles: newCount, timestamp: new Date() }, { merge: true });
-          const remaining = Math.max(0, FREE_BATTLES - newCount);
-          try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/3 · ${remaining} remaining today`); } catch(e){}
+          const remaining = Math.max(0, (access.limit || 5) - newCount);
+          try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/${access.limit} · ${remaining} remaining this month`); } catch(e){}
           return;
         }
       } catch(e) {}
       
       // Fallback to localStorage
-      const key = 'sscai_battles_' + today + '_' + uid;
-      const currentCount = parseInt(localStorage.getItem(key) || '0');
+      const monthKey = 'sscai_u:' + uid + ':battles_month_' + thisMonth;
+      const currentCount = parseInt(localStorage.getItem(monthKey) || '0');
       const newCount = currentCount + 1;
-      localStorage.setItem(key, newCount.toString());
-      const remaining = Math.max(0, FREE_BATTLES - newCount);
-      try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/3 · ${remaining} remaining today`); } catch(e){}
+      localStorage.setItem(monthKey, newCount.toString());
+      const remaining = Math.max(0, (access.limit || 5) - newCount);
+      try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/${access.limit} · ${remaining} remaining this month`); } catch(e){}
+      return;
     }
+    
+    // If premium user, no tracking needed
+    if (isPrem) {
+      try { if (typeof showToast === 'function') showToast('⚔️ Battle Created · Unlimited battles as Premium user'); } catch(e){}
+      return;
+    }
+    
+    // Free user tracking (daily)
+    const today = new Date().toISOString().split('T')[0];
+    try {
+      const db = window._firebaseDb;
+      const { doc, setDoc } = window._firebaseFns || {};
+      if (db && setDoc) {
+        const docRef = doc(db, 'users', uid, 'dailyUsage', today);
+        const newCount = (access.used || 0) + 1;
+        await setDoc(docRef, { battles: newCount, timestamp: new Date() }, { merge: true });
+        const remaining = Math.max(0, FREE_BATTLES - newCount);
+        try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/${FREE_BATTLES} · ${remaining} remaining today`); } catch(e){}
+        return;
+      }
+    } catch(e) {}
+    
+    // Fallback to localStorage
+    const key = 'sscai_u:' + uid + ':battles_' + today;
+    const currentCount = parseInt(localStorage.getItem(key) || '0');
+    const newCount = currentCount + 1;
+    localStorage.setItem(key, newCount.toString());
+    const remaining = Math.max(0, FREE_BATTLES - newCount);
+    try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/${FREE_BATTLES} · ${remaining} remaining today`); } catch(e){}
   };
 
   /* ── Hide group creation for non-premium ──────────────────── */
