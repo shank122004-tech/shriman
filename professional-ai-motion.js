@@ -33,20 +33,8 @@
 
     if (checkPremium()) return;
 
-    // Never inject twice. If the animation is already mounted, do nothing —
-    // this is the single source of truth for whether the motion animation
-    // is showing, so callers (including app.js) can call this freely
-    // without worrying about stacking duplicate DOM/rAF loops.
-    if (document.getElementById('ai-motion-wrapper')) {
-      retryAttempts = 0;
-      return;
-    }
-
     const welcomeScreen = document.getElementById('welcomeScreen');
     if (!welcomeScreen) {
-      // #welcomeScreen is legitimately absent from the DOM whenever the
-      // user is inside an existing chat session. Retry a bounded number of
-      // times rather than polling forever in the background.
       if (retryAttempts >= MAX_RETRY_ATTEMPTS) {
         retryAttempts = 0;
         return;
@@ -54,6 +42,33 @@
       retryAttempts++;
       pendingRetryTimer = setTimeout(init, 200);
       return;
+    }
+
+    // ✅ Check if welcomeScreen is actually visible
+    const isWelcomeVisible = welcomeScreen.style.display !== 'none' && 
+                             welcomeScreen.style.visibility !== 'hidden' &&
+                             welcomeScreen.offsetParent !== null;
+    
+    if (!isWelcomeVisible) {
+      retryAttempts = 0;
+      return; // Welcome screen not visible, don't show animation
+    }
+
+    // ✅ If animation already exists and welcome screen is visible, assume it's already initialized
+    const existingWrapper = document.getElementById('ai-motion-wrapper');
+    if (existingWrapper && existingWrapper.style.display !== 'none') {
+      retryAttempts = 0;
+      return; // Animation already showing
+    }
+
+    // If animation was hidden, show it again for new chat
+    if (existingWrapper && existingWrapper.style.display === 'none') {
+      existingWrapper.style.display = 'flex';
+      existingWrapper.style.opacity = '1';
+      existingWrapper.style.visibility = 'visible';
+      existingWrapper.style.pointerEvents = 'auto';
+      retryAttempts = 0;
+      return; // Reuse existing animation
     }
 
     retryAttempts = 0;
@@ -920,6 +935,7 @@
       wrapper.style.opacity = '0';
       wrapper.style.visibility = 'hidden !important';
       wrapper.style.pointerEvents = 'none !important';
+      wrapper.style.display = 'none'; // ✅ Add display:none so init() can detect hidden state
       setTimeout(() => {
         welcomeScreen.style.display = 'none !important';
         welcomeScreen.innerHTML = '';
