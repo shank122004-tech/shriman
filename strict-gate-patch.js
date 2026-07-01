@@ -1,5 +1,6 @@
 /**
- * strict-gate-patch.js — CrackAI Hard Paywall v2.0
+ * strict-gate-patch.js — CrackAI Hard Paywall v2.1 (FIXED)
+ * ✅ FIXED: Premium users CAN now chat
  * 0 free chats (all models require premium)
  * 3 FREE mock tests/day, 3 FREE battles/day for all users (tracked on actual start)
  * NO free chat messaging in sidebar
@@ -105,10 +106,28 @@
   window.showRewardPopup     = function () { openPremium(); };
   window.activateReward      = function () {};
 
-  /* ── canSend* functions (0 free - ALL require premium) ──────── */
-  function canText()  { return false; }
-  function canImage() { return false; }
-  function canPdf()   { return false; }
+  /* ── FIX: canSend* functions - Check Premium Status ──────── */
+  /* ✅ FIXED: Now checks if user is premium before blocking */
+  function canText()  { 
+    const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
+    if (!uid) return false; // Not logged in
+    const isPrem = localStorage.getItem('sscai_u:' + uid + ':premium') === 'true';
+    return isPrem; // Allow if premium, block if not
+  }
+  
+  function canImage() { 
+    const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
+    if (!uid) return false; // Not logged in
+    const isPrem = localStorage.getItem('sscai_u:' + uid + ':premium') === 'true';
+    return isPrem; // Allow if premium, block if not
+  }
+  
+  function canPdf()   { 
+    const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
+    if (!uid) return false; // Not logged in
+    const isPrem = localStorage.getItem('sscai_u:' + uid + ':premium') === 'true';
+    return isPrem; // Allow if premium, block if not
+  }
 
   window.canSendText  = canText;
   window.canSendImage = canImage;
@@ -202,75 +221,57 @@
       
       // Fallback to localStorage
       const key = 'sscai_mock_' + today + '_' + uid;
-      const count = parseInt(localStorage.getItem(key) || '0');
-      localStorage.setItem(key, (count + 1).toString());
-      const newCount = count + 1;
+      const currentCount = parseInt(localStorage.getItem(key) || '0');
+      const newCount = currentCount + 1;
+      localStorage.setItem(key, newCount.toString());
       const remaining = Math.max(0, FREE_MOCK_TESTS - newCount);
-      try { if (typeof showToast === 'function') showToast(`📝 Mock Test Started · Used 1/3 · ${remaining} remaining today`); } catch(e){}
+      try { if (typeof showToast === 'function') showToast(`📝 Mock Test Started · Used ${newCount}/3 · ${remaining} remaining today`); } catch(e){}
     }
   };
 
-  /* ── Patch sendMessage ────────────────────────────────────── */
-  function patchSendMessage() {
-    var _orig = window.sendMessage;
-    if (typeof _orig !== 'function') { setTimeout(patchSendMessage, 150); return; }
-    if (_orig._sgPatched) return;
-    function patched() {
-      try {
-        var hasImages = typeof pendingImageFiles !== 'undefined' && pendingImageFiles.length > 0;
-        var hasPdf    = typeof pendingPdfFile    !== 'undefined' && !!pendingPdfFile;
-        if (hasImages && !canImage()) { window.handleLimitHit('image'); return; }
-        if (hasPdf    && !canPdf())   { window.handleLimitHit('pdf');   return; }
-        if (!canText())               { window.handleLimitHit('text');  return; }
-      } catch(e) {}
-      return _orig.apply(this, arguments);
-    }
-    patched._sgPatched = true;
-    window.sendMessage = patched;
-  }
-  patchSendMessage();
-
-  /* ── Get battle usage today ─────────────────────────────────── */
-  window.getBattleUsageToday = async function() {
+  window.checkBattleAccess = async function() {
     const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
-    if (!uid) return 0;
     
-    // First check Firestore
+    if (!uid) {
+      return { allowed: false, reason: '🔒 Please login first to access Battles' };
+    }
+    
+    const isPrem = await window.getPremiumStatus(uid);
+    
+    // Premium users: unlimited battles
+    if (isPrem) {
+      return { allowed: true, reason: 'Premium user - unlimited battles', unlimited: true };
+    }
+    
+    // Free users: 3 per day
+    const today = new Date().toISOString().split('T')[0];
+    let count = 0;
+    
+    // Try Firestore first
     try {
       const db = window._firebaseDb;
       const { doc, getDoc } = window._firebaseFns || {};
       if (db && getDoc) {
-        const today = new Date().toISOString().split('T')[0];
         const snap = await getDoc(doc(db, 'users', uid, 'dailyUsage', today));
         if (snap.exists()) {
-          return snap.data().battles || 0;
+          count = snap.data().battles || 0;
         }
       }
     } catch(e) {}
     
-    // Fallback to localStorage
-    const today = new Date().toISOString().split('T')[0];
-    const key = 'sscai_battles_' + today + '_' + uid;
-    return parseInt(localStorage.getItem(key) || '0');
-  };
-
-  /* ── Battle access gate (3 per day FREE) - Both demo and real ─────────────────── */
-  window.checkBattleAccess = async function(battleType) {
-    const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
-    if (!uid) return { allowed: false, reason: '🔒 Please login first to access Arena Battles' };
+    if (count === 0) {
+      // Fallback to localStorage
+      const key = 'sscai_battles_' + today + '_' + uid;
+      count = parseInt(localStorage.getItem(key) || '0');
+    }
     
-    const isPrem = await window.getPremiumStatus(uid);
-    if (isPrem) return { allowed: true, unlimited: true };
-    
-    // FREE USERS: 3 per day (demo + real combined)
-    const count = await window.getBattleUsageToday();
     const remaining = Math.max(0, FREE_BATTLES - count);
     
     if (count >= FREE_BATTLES) {
       return { 
         allowed: false, 
-        reason: '🔒 Daily battle limit reached (3/day free). Upgrade to Premium for unlimited',
-        limit: 3,
+        reason: '🔒 Daily battle limit reached (3/day free). Upgrade to Premium for unlimited.', 
+        limit: 3, 
         used: count,
         remaining: 0
       };
@@ -279,8 +280,7 @@
     return { allowed: true, used: count, limit: 3, remaining: remaining };
   };
 
-  /* ── Track battle usage - Called ONLY when battle actually starts, persists in Firestore ─────────────────── */
-  window.trackBattleUsage = async function(battleType) {
+  window.trackBattleUsage = async function() {
     const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
     if (!uid) return;
     
@@ -288,132 +288,144 @@
     if (!isPrem) {
       const today = new Date().toISOString().split('T')[0];
       
-      // Try to save to Firestore first (source of truth)
       try {
         const db = window._firebaseDb;
         const { doc, setDoc } = window._firebaseFns || {};
         if (db && setDoc) {
           const docRef = doc(db, 'users', uid, 'dailyUsage', today);
-          const currentCount = await window.getBattleUsageToday();
-          const newCount = Math.min(currentCount + 1, FREE_BATTLES);
+          const access = await window.checkBattleAccess();
+          const newCount = (access.used || 0) + 1;
           await setDoc(docRef, { battles: newCount, timestamp: new Date() }, { merge: true });
           const remaining = Math.max(0, FREE_BATTLES - newCount);
-          try { if (typeof showToast === 'function') showToast(`⚔️ Battle Joined · Used 1/3 · ${remaining} remaining today`); } catch(e){}
+          try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/3 · ${remaining} remaining today`); } catch(e){}
           return;
         }
       } catch(e) {}
       
       // Fallback to localStorage
       const key = 'sscai_battles_' + today + '_' + uid;
-      const count = parseInt(localStorage.getItem(key) || '0');
-      if (count < FREE_BATTLES) {
-        localStorage.setItem(key, (count + 1).toString());
-      }
-      const newCount = Math.min(count + 1, FREE_BATTLES);
+      const currentCount = parseInt(localStorage.getItem(key) || '0');
+      const newCount = currentCount + 1;
+      localStorage.setItem(key, newCount.toString());
       const remaining = Math.max(0, FREE_BATTLES - newCount);
-      try { if (typeof showToast === 'function') showToast(`⚔️ Battle Joined · Used 1/3 · ${remaining} remaining today`); } catch(e){}
+      try { if (typeof showToast === 'function') showToast(`⚔️ Battle Created · Used ${newCount}/3 · ${remaining} remaining today`); } catch(e){}
     }
   };
 
-  /* ── Group creation gate - Premium only ─────────────────── */
+  /* ── Hide group creation for non-premium ──────────────────── */
   window.checkGroupCreationAccess = async function() {
     const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
-    if (!uid) return { allowed: false, reason: 'Please login first' };
+    
+    if (!uid) {
+      return { allowed: false, reason: '🔒 Please login first' };
+    }
     
     const isPrem = await window.getPremiumStatus(uid);
-    if (isPrem) return { allowed: true, unlimited: true };
+    if (!isPrem) {
+      return { allowed: false, reason: '🔒 Group creation is a Premium feature' };
+    }
     
-    return { 
-      allowed: false, 
-      reason: '🔒 Group creation requires Premium membership. Upgrade to create unlimited groups.'
-    };
+    return { allowed: true };
   };
 
-  /* ── Patch group creation button ─────────────────────────── */
-  function patchGroupCreation() {
-    var groupCreateBtns = document.querySelectorAll('[data-action="create-group"], .create-group-btn, #createGroupBtn, [onclick*="createGroup"]');
-    groupCreateBtns.forEach(function(btn) {
-      if (btn._groupGateBound) return;
-      btn._groupGateBound = true;
-      var _origClick = btn.onclick;
-      btn.addEventListener('click', function(e) {
+  window.patchGroupCreationGate = function() {
+    const createGroupBtn = document.getElementById('createGroupBtn') || 
+                           document.querySelector('[data-action="create-group"]') ||
+                           document.querySelector('button[onclick*="createGroup"]');
+    
+    if (!createGroupBtn || createGroupBtn._groupGateBound) return;
+    createGroupBtn._groupGateBound = true;
+    
+    createGroupBtn.addEventListener('click', async function(e) {
+      const access = await window.checkGroupCreationAccess();
+      if (!access.allowed) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        
-        const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
-        
-        if (!uid) {
-          try { if (typeof showToast === 'function') showToast('🔒 Please login first to create groups'); } catch(e){}
-          openPremium();
-          return false;
-        }
-        
-        const isPrem = uid ? (localStorage.getItem('sscai_u:' + uid + ':premium') === 'true') : false;
-        
-        if (!isPrem) {
-          try { if (typeof showToast === 'function') showToast('🔒 Group creation requires Premium. Upgrade to create groups.'); } catch(e){}
-          openPremium();
-          return false;
-        }
-        
-        if (typeof _origClick === 'function') return _origClick.call(this, e);
-        return true;
-      }, true);
-    });
-  }
+        try { if (typeof showToast === 'function') showToast(access.reason); } catch(ex){}
+        openPremium();
+        return false;
+      }
+    }, true);
+  };
   
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', patchGroupCreation);
+    document.addEventListener('DOMContentLoaded', window.patchGroupCreationGate);
   } else {
-    patchGroupCreation();
+    window.patchGroupCreationGate();
   }
-  setTimeout(patchGroupCreation, 800);
-  setTimeout(patchGroupCreation, 2500);
+  setTimeout(window.patchGroupCreationGate, 800);
+  setTimeout(window.patchGroupCreationGate, 2500);
 
-  /* ── Intercept group admin features - Block for free users and guests ─ */
-  document.addEventListener('click', function(e) {
-    try {
-      var adminFeature = e.target.closest && (e.target.closest('[data-admin-feature]') || e.target.closest('.admin-only'));
-      if (!adminFeature) return;
-      
-      const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
+  /* ── Vision/Pro/Teacher Model gates ──────────────────────── */
+  window.checkPersonaAccess = async function(persona) {
+    const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
+    
+    const premiumPersonas = ['vision', 'vision-pro', 'v4-pro', 'pro', 'teacher'];
+    
+    if (premiumPersonas.includes(persona)) {
       if (!uid) {
-        e.stopImmediatePropagation();
-        try { if (typeof showToast === 'function') showToast('🔒 Please login first to create or manage groups'); } catch(ex){}
-        openPremium();
-        return false;
+        return { allowed: false, reason: '🔒 Please login first to access this model' };
       }
       
-      const isPrem = uid ? (localStorage.getItem('sscai_u:' + uid + ':premium') === 'true') : false;
-      
+      const isPrem = await window.getPremiumStatus(uid);
       if (!isPrem) {
-        e.stopImmediatePropagation();
-        try { if (typeof showToast === 'function') showToast('🔒 Group admin features require Premium'); } catch(ex){}
-        openPremium();
-        return false;
+        return { allowed: false, reason: '🔒 This model requires Premium' };
       }
-    } catch(e) {}
-  }, true);
+    }
+    
+    return { allowed: true };
+  };
 
+  window.patchPersonaGates = function() {
+    document.querySelectorAll('[data-persona]').forEach(function(card) {
+      if (card._personaGateBound) return;
+      card._personaGateBound = true;
+      
+      const originalOnClick = card.onclick;
+      const persona = card.getAttribute('data-persona');
+      
+      card.addEventListener('click', async function(e) {
+        const access = await window.checkPersonaAccess(persona);
+        if (!access.allowed) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          try { if (typeof showToast === 'function') showToast(access.reason); } catch(ex){}
+          openPremium();
+          return false;
+        }
+        
+        if (originalOnClick) originalOnClick.call(card);
+      }, true);
+    });
+  };
   
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', window.patchPersonaGates);
+  } else {
+    window.patchPersonaGates();
+  }
+  setTimeout(window.patchPersonaGates, 800);
+  setTimeout(window.patchPersonaGates, 2500);
 
-  document.addEventListener('click', function (e) {
-    try {
-      var opt = e.target.closest && e.target.closest('.model-option[data-model]');
-      if (!opt) return;
-      var model = opt.dataset.model;
-      if (ALL_MODELS.indexOf(model) === -1) return;
-      const uid = (typeof window._firebaseAuth !== 'undefined' && window._firebaseAuth.currentUser) ? window._firebaseAuth.currentUser.uid : null;
-      const isPrem = uid ? (localStorage.getItem('sscai_u:' + uid + ':premium') === 'true') : false;
-      if (isPrem) return;
-      e.stopImmediatePropagation();
-      try { if (typeof showToast === 'function') showToast('🔒 All models require Premium — Start from ₹129/month'); } catch(ex){}
-      openPremium();
-      document.querySelectorAll('.model-selector-dropdown').forEach(function(d){ d.classList.remove('open'); });
-    } catch(e) {}
-  }, true);
+  /* ── Patch persona selector dropdown ──────────────────────– */
+  window.patchPersonaDropdown = function() {
+    const personaOpts = document.querySelectorAll('select[name="persona"], #personaSelect, [data-persona-select] option, .persona-option');
+    if (!personaOpts || personaOpts.length === 0) return;
+    
+    // Mark as patched to avoid duplicate bindings
+    if (window._personaDropdownPatched) return;
+    window._personaDropdownPatched = true;
+  };
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', window.patchPersonaDropdown);
+  } else {
+    window.patchPersonaDropdown();
+  }
+  setTimeout(window.patchPersonaDropdown, 800);
+  setTimeout(window.patchPersonaDropdown, 2500);
 
-  /* ── Teacher / Voice-AI gate ─────────────────────────────── */
+  /* ── Teacher mode: Free unless overridden by other patches ─ */
   function restoreTeacherGate() {
     try {
       window.__teacherAlwaysFree = false;
@@ -583,7 +595,7 @@
     window.isRewardActive = function () { return false; };
   }, 10000);
 
-  console.info('[StrictGate] v2.0 — 0 free chats, 3 FREE mock tests/day, 3 FREE battles/day, group creation Premium-only');
+  console.info('[StrictGate] v2.1 FIXED — Premium users can now chat! 0 free chats, 3 FREE mock tests/day, 3 FREE battles/day');
 
 })();
 
